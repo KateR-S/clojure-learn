@@ -2,9 +2,8 @@
   (:gen-class :main true)
   (:require [clj-http.client :as client]
             [cheshire.core :refer :all]
-            [clojure.math.numeric-tower :as math]))
-
-(def prefix "https://deckofcardsapi.com/api/deck/")
+            [clojure.math.numeric-tower :as math]
+            [clojure-noob.api :as api]))
 
 (def card-values
   { "0" "10"
@@ -25,15 +24,10 @@
 (def value-players
   (clojure.set/map-invert player-values))
 
-(defn get-urls
-  ([] {:new (str prefix "new/shuffle/?deck_count=1")})
-  ([id] (into (get-urls) {:shuffle (str prefix id "/shuffle")}))
-  ([id count] (into (get-urls id) {:draw (str prefix id "/draw/?count=" count)})))
-
 (defn handle-deck
   "Creating a deck of cards and getting back some deck stuff"
   [action type & items]
-  (decode (get (client/get (get (apply get-urls items) type) {:insecure? true}) :body)))
+  (decode (get (client/get (get (apply api/get-urls items) type) {:insecure? true}) :body)))
 
 (defn just-hands
   "return just the hands from the round details"
@@ -48,13 +42,30 @@
       nil)))
 ; TODO: Handle nil return value from this function
 
+(defn- draw-half
+  [deck_id]
+  (mapv #(% "code") ((handle-deck :get :draw deck_id "26") "cards")))
+
+(defn- take-value
+  [card-vector]
+  (mapv #(subs % 0 1) card-vector))
+
+(defn- make-cards-numeric
+  [card-vector]
+  (->>
+      card-vector
+      take-value
+      (replace card-values)
+      (mapv read-string)))
+
 (defn- deal-half
   "Deal half the deck to a player"
   [deck_id player]
-  (let [cards (mapv #(% "code") ((handle-deck :get :draw deck_id "26") "cards"))
-        card-numbers (mapv #(subs % 0 1) cards)
-        numeric-card-numbers (replace card-values card-numbers)]
-    (assoc {} player (mapv read-string numeric-card-numbers))))
+  (->>
+      deck_id
+      draw-half
+      make-cards-numeric
+      (assoc {} player)))
 
 (defn create-piles
   "Cut the deck in half and assign to players"
@@ -90,6 +101,7 @@
   (let [winner (calc-winner (round-details :score))]
     (assoc round-details
       :score (update-in (round-details :score) [winner] inc)
+      :winner-val winner
       :winner (player-values winner)
       :loser (apply keyword (vals (dissoc player-values winner))))))
 
@@ -110,7 +122,7 @@
 (defn settle-hand-size
   "Return hands of the same size"
   [round-details]
-  (assoc round-details (looped-hands (just-hands round-details))))
+  (merge round-details (looped-hands (just-hands round-details))))
 
 (defn matched-cards
   "where the snap location is"
@@ -158,9 +170,12 @@
       (let [
             round_cards (into [] (flatten (mapv round-cards cards-values snap_location)))
             winner (round-details :winner)
+            winnerval (round-details :winner-val)
             loser (round-details :loser)
-            win_hand (apply vector (flatten (conj (subvec (nth cards-values (value-players winner)) (+ 1 (nth snap_location (value-players winner)))) round_cards)))
+            win_hand (apply vector (flatten (conj (subvec (nth cards-values winnerval) (+ 1 (nth snap_location winnerval))) round_cards)))
             lose_hand (subvec (nth cards-values (value-players loser)) (+ 1 (nth snap_location (value-players loser))))]
+        (println "In round details")
+        (println round_cards)
         (println (str "WINNER IS " (value-players winner)))
         (println (str "cards are " cards-values " with round cards " round_cards))
         (assoc round-details winner win_hand loser lose_hand)))))
